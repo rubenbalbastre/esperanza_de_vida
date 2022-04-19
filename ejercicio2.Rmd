@@ -1,0 +1,194 @@
+---
+title: "Ejercicio 2"
+author: "Rubén Balbastre Alcocer"
+date: "17/1/2022"
+output: html_document
+---
+
+
+**Prueba los modelos:**
+
+**¿Tiene la esperanza de vida una relación positiva significativa con el consumo de alcohol? ¿Es igual en los paises en desarrollo que en los países desarrollados?. Se os pide trabajar en los modelos explicativos que considereis conveniente para responder a estas preguntas, teniendo en cuenta la posible confusión. Podéis partir del modelo predictivo ajustado en la tarea 1, pero notad que, a diferencia del ejercicio 1, en éste la componente inferencial del problema es vital, por lo que no debeis obviar la validación de las hipótesis.**
+
+Cargamos los datos originales de 2014 y los imputados de 2014 siguiendo el método 1.
+
+```{r}
+load("./datos/dataframe_2014_imputado.RData")
+rownames(dataframe_2014_imputado) <- seq(from=1,to=183,by=1)
+load("./datos/EV2014.RData")
+```
+
+Para responder a la pregunta sobre la relación del alcohol con la esperanza de vida debemos realizar un análisis exhaustivo pues pueden existir variables confusoras que de no tenerlas en cuentas nos pueden llevar a conclusiones erróneas. Primero, examinemos los modelos propuestos en el enunciado.
+
+```{r}
+modAL1<-lm(Life.expectancy ~ Alcohol, data=EV2014, na.action=na.exclude)
+modAL2<-lm(Life.expectancy ~ Alcohol*Status, data=EV2014, na.action=na.exclude)
+summary(modAL1)
+cat("\n \n \n")
+summary(modAL2)
+```
+
+Atendiendo a los modelos que se presentan en el enunciado podíamos llegar a la conclusión de que el alcohol tiene una relación positiva con la esperanza de vida. Veamos la figura.
+
+```{r}
+# alcohol todos los valores
+d <- dataframe_2014_imputado
+plot(x=d$Alcohol, y = d$Life.expectancy,xlab="Alcohol",ylab="Life Expectancy")
+abline(coef=coef(modAL1),col="red")
+legend(x="bottomright",legend=c("Datos","Lineal"),col=c("black","red"),lty=c(0,1),pch=c(1,NA))
+```
+
+Sin embargo, si atendemos a la variable *Status* vemos dos claros comportamientos: una pendiente positiva para los países en desarrollo y una negativa para los países desarrollados. 
+
+```{r}
+df <- subset(dataframe_2014_imputado,Status=="Developed" & Alcohol>0.1)
+lmDeveloped<-lm(Life.expectancy ~ Alcohol, data=subset(df,Status=="Developed"))
+plot(x=df$Alcohol, y = df$Life.expectancy,xlab="Alcohol",ylab="Life Expectancy",main="Alcohol*Status", xlim=c(0,20),ylim=c(40,90))
+abline(coef=coef(lmDeveloped),col="red")
+
+df <- subset(dataframe_2014_imputado,Status=="Developing")
+lmDeveloping<-lm(Life.expectancy ~ Alcohol, data=subset(df,Status=="Developing"))
+points(x=df$Alcohol, y = df$Life.expectancy,col="gray")
+abline(coef=coef(lmDeveloping),col="blue")
+legend(x="bottomright",legend=c("Developed","Lineal Developed","Developing","Lineal Developing"),col=c("black","red","gray","blue"),lty=c(0,1,0,1),pch=c(1,NA,1,NA))
+
+coef(summary(lmDeveloping))['Alcohol','Estimate']
+coef(summary(lmDeveloped))['Alcohol','Estimate']
+```
+
+Exploremos la dependencia de Alcohol con más variables. Nuestro criterio para seleccionar una variable como confusora de *Alcohol* será un cambio superior al 10 % en el coeficiente de *Alcohol* entre los casos donde esté presenta dicha variable y donde esté ausente. En el caso anterior, resulta obvio que *Status* es confusora. 
+
+Realizamos un bucle incluyendo las variables que realizan el cambio en el coficiente antes comentado. Probamos tanto las variables continuas como las posibles combinaciones de variables continuas multiplicadas por variables categóricas.
+
+```{r}
+modAL1 <- lm(Life.expectancy ~  Alcohol, data=dataframe_2014_imputado)
+alcohol_coef <- coef(summary(modAL1))['Alcohol','Estimate']
+posibles_confusoras_continuas <- setdiff(names(dataframe_2014_imputado),c("Life.expectancy","GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat"))
+posibles_confusoras_categoricas <- c("GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat")
+
+for (confusora in posibles_confusoras_continuas){
+  for (confusora2 in posibles_confusoras_categoricas){
+    formula <- as.formula(paste('~.+',confusora,'+','Alcohol','*',confusora2))
+    m <- update(modAL1,formula)
+    nuevo_alcohol_coef <- coef(summary(m))['Alcohol','Estimate']
+    if (abs(alcohol_coef - nuevo_alcohol_coef)/alcohol_coef >= 0.1){
+      modAL1 <- m
+    }
+  }
+}
+summary(step(modAL1,trace=0))
+```
+
+Depuremos el modelo. Eliminemos la variable *Status* por tener un pvalor mayor que el nivel de significación de su contraste de hipótesis.
+
+```{r}
+modAL1 <- lm(formula = Life.expectancy ~ Alcohol + GDP_cat + Diphtheria_cat + 
+    HIV.AIDS_cat + thinness.5.9.years + Schooling + GDP + HIV.AIDS + 
+    Alcohol:GDP_cat, data = dataframe_2014_imputado)
+summary(modAL1)
+```
+
+Pasemos a la depuración del modelo, eliminemos los posibles outliers.
+
+```{r}
+plot(modAL1)
+car::influencePlot(modAL1)
+```
+
+```{r}
+outliers <- c(144,4,28)
+data_outliers <- dataframe_2014_imputado[setdiff(rownames(dataframe_2014_imputado),outliers),]
+modAL1 <- update(modAL1,data = data_outliers)
+summary(modAL1)
+```
+
+Hemos mejorado el coeficiente de determinación  y ahora todas las variables son explicativas. Pasemos a estudiar la colinealidad entre las variables.
+
+```{r}
+car::vif(modAL1)
+```
+
+Los factores son todos menores que 10 por lo que consideraremos no colinealidad entre las variables predictoras. Veamos ahora la normalidad de los residuos, su heterocedasticidad y su linealidad.
+
+```{r}
+shapiro.test(modAL1$residuals)
+lmtest::bptest(modAL1)
+library(ggplot2)
+ggplot(data = NULL, aes(x = fitted(modAL1), y = rstudent(modAL1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "valores ajustados") + theme_bw() 
+```
+
+El pvalor del test de Shapiro-Wilk es mayor que el nivel de significación $\alpha=0.05$ por lo que no podemos rechazar la hipótesis nula y aceptamos normalidad de los residuos. Del mismo modo, el pvalor del test de Breusch-Pagan es mayor que el nivel de significación por lo que no podemos rechazar la hipótesis nula y aceptamos homocedasticidad de los residuos. Por último, la linealidad de los residuos es aceptable pues como se aprecia en la figura la linea de suavizado de los puntos junto con sus intervalos de confianza (al 95%) comtemplan la línea horizontal $y=0$.
+
+Se concluye por tanto que el Alcohol tiene una relación positiva en países con GDP menor que 4270 dolares y una relación negativa en países con GDP mayor. A pesar de ello, se sabe que el alcohol es una droga perjudicial para la salud.
+
+```{r}
+# modAL3 <- lm(Life.expectancy ~. + I(Schooling^3) + poly(Diphtheria, 2) + poly(thinness.5.9.years, 3) + poly(HIV.AIDS,5), data=dataframe_2014_imputado)
+# 
+# posibles_confusoras_continuas <- setdiff(names(dataframe_2014_imputado),c("Life.expectancy","GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat"))
+# posibles_confusoras_categoricas <- c("GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat")
+# 
+# for (confusora in posibles_confusoras_continuas){
+#   for (confusora2 in posibles_confusoras_categoricas){
+#     formula <- as.formula(paste('~.+',confusora,'+','Alcohol','*',confusora2))
+#     modAL3 <- update(modAL3,formula)
+#   }
+# }
+# summary(step(modAL3,trace=0))
+```
+
+
+
+
+```{r}
+# modAL3 <- lm(Life.expectancy ~. + I(Schooling^3)+
+#                poly(Diphtheria, 2) + poly(thinness.5.9.years, 3) + poly(HIV.AIDS,5), data=dataframe_2014_imputado)
+# posibles_confusoras <- setdiff(names(dataframe_2014_imputado),c("Life.expectancy"))
+# 
+# for (confusora in posibles_confusoras){
+#   for (confusora2 in posibles_confusoras){
+#     formula <- as.formula(paste('~.+',confusora,'*',confusora2))
+#     modAL3 <- update(modAL3,formula)
+#   }
+# }
+# summary(step(modAL3,trace=0))
+```
+
+
+```{r}
+# modAL3 <- lm(Life.expectancy ~. + I(Schooling^3)+
+#                poly(Diphtheria, 2) + poly(thinness.5.9.years, 3) + poly(HIV.AIDS,5), data=dataframe_2014_imputado)
+# posibles_confusoras_continuas <- setdiff(names(dataframe_2014_imputado),c("Life.expectancy","GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat"))
+# posibles_confusoras_categoricas <- c("GDP_cat","Status","Diphtheria_cat","HIV.AIDS_cat")
+# 
+# for (confusora in posibles_confusoras_continuas){
+#   for (confusora2 in posibles_confusoras_categoricas){
+#     formula <- as.formula(paste('~.+',confusora,'*',confusora2))
+#     modAL3 <- update(modAL3,formula)
+#   }
+# }
+# summary(step(modAL3,trace=0))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

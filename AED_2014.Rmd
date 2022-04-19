@@ -1,0 +1,527 @@
+---
+title: "AED"
+author: "Rubén Balbastre Alcocer"
+date: "31/12/2021"
+output: 
+  html_document:
+    toc: yes
+  
+---
+
+En este documento se realiza el estudio de los datos anómalos y datos perdidos, así como su posible imputación. Analizaremos caso por caso cada variable y trataremos de imputar los datos mediante modelos multineales del resto de las variables.
+
+Las librerías necesarias para la ejecución son:
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+```
+
+
+## Variables de interés
+
+Carguemos los datos del archivo RData. Tras un análisis de la descripción de las variables proporcionada en el enunciado del problema, seleccionamos únicamente las de interés (`candidatas`). Dado que este es bastante explícito con su descripción, no detallaremos más información salvo las razones que nos llevaron a seleccionar estas candidatas.
+
+### Incluidas
+
+* La variable *Country* es una etiqueta así que no la consideraremos. 
+
+* La variable *Year* es constante en todo el dataframe por lo que tampoco la incluiremos.
+
+* La variable *Status* debe ser incluida pues la categorización de país desarrollado o en desarrollo puede agrupar condiciones de vida determinantes. 
+
+* La variable *Alcohol* debe ser incluida pues es una droga con probados efectos nocivos para la salud.
+
+* La variable *percentage.expenditure* está relacionada con las infraestructuras sanitarias y a priori debe ser incluida
+
+* Las variables *Hepatitis.B*, *Polio*, *Diphteria* la incluiremos pues la vacunación influye en prevenir futuras enfermedades.
+
+* La variable *Measles* debe ser incluida porque el sarampión podría provocar futuras complicaciones sanitarias.
+
+* Las variables *BMI*, *thinness..1.19.years* y *thinness.5.9.years* deben ser incluida pues la obesidad o extrema delgadez es un problema que afecta a la salud.
+
+* La variable *Schooling* es incluida pues el trabajo a edades muy tempranas podría tener relación con la esperanza de vida
+
+* La variable *HIV.AIDS* es incluida pues puede dar cuenta de la cantidad de VIH presente en el país. Ignoramos la relación de consecuencia de la variable e introducimos esta variable como indicador de la presencia de VIH en el país.
+
+### No incluidas
+
+* Por un lado, las variables *Adult.Mortality*, *infant.deaths*, *under.five.deaths* no deben debe ser incluidas pues contienen información a futuro. Es decir, son consecuencia de la esperanza de vida y no al revés. Por otro lado, la variable *Income.composition.of.resources* no debe ser incluido pues hace referencia al desarrollo humano y a la esperanza de vida, es decir, es una variable consecuencia y no causa de la esperanza de vida de un país. Puede revisarse la definición en Wikipedia: https://en.wikipedia.org/wiki/Human_Development_Index 
+
+
+
+```{r}
+load('./datos/EV2014.RData') # cargamos los datos
+data <- EV2014 # copia de los datos sobre la que trabajaremos
+candidatas <-c("Life.expectancy","Status","Alcohol","Hepatitis.B","Measles","BMI","Polio","Diphtheria","thinness..1.19.years","thinness.5.9.years","Schooling","GDP","Total.expenditure","percentage.expenditure","Population","HIV.AIDS")
+data <- data[,candidatas]
+```
+
+Evaluemos la proporción de datos faltantes. Definimos la función `percent` para facilitar esta tarea.
+
+```{r}
+percent <- function(col){ return(1 - length(na.exclude(data[,col]))/length(data[,col])) }
+percentage <- vector(mode="integer",length=length(candidatas))
+names(percentage) <- candidatas
+for (n in candidatas){
+  percentage[n] <- percent(n)
+}
+percentage
+```
+
+Encontramos 2 variables, *Population* y *GDP* con más del 15 % de los datos perdidos. También se presentan *Hepatitis.B* y *Schooling* con el 5 % aproximadamente. El resto de variables presentan un porcentaje de datos perdidos menor del 2 % a excepción de:
+*Status*, *Measles*, *Polio*, *Diphtheria*, *percentage.expenditure* y *HIV.AIDS*.
+
+## Estrategia de imputación
+
+Existe un porcentaje de datos perdidos lo suficientemente importante como para no poder eliminar dichos registros directamente, pues suponen un ~ `r round((1 - nrow(na.exclude(data))/nrow(data)) * 100,1)` % del total. Para realizar la inputación, utilizaremos siempre datos originales y nunca los derivados de otras imputaciones de este mismo documento. 
+
+Queremos imputar todas las variables. Para cada variable realizaremos un examen que incluirá: la media, los rangos intercuartílicos, el valor máximo, el valor mínimo, un histograma de su distribución o un scatter plot. Para construir los modelos multineales utilizaremos las variables sin datos faltantes a fin de poder realizar la imputación correctamente. Tras cada predicción, comprobaremos que los datos tienen sentido. En las variables porcentuales significará que están comprendidas entre 0 y 100 por ejemplo y en el resto que son positivas con alguna otra condición que se especificará en cada caso. Veamos las variables con todos los registros completos.
+
+```{r}
+names(percentage)[percentage==0]
+```
+
+Comprobemos que los valores de estas variables completas tienen sentido.
+
+## Comprobación de los datos de las variables completas
+
+### *percentage.expenditure*
+
+Los datos deberían encontrarse en el intervalo $]0,100[$ pues se trata de un porcentaje. Veamos la proporción de datos que no se encuentran en este intervalo.
+
+```{r}
+ggplot(data=data,aes(x=seq(from=1,to=183,by=1), y=percentage.expenditure)) + geom_point() + labs(x="Index")
+sum(EV2014$percentage.expenditure==0 | EV2014$percentage.expenditure>100)
+```
+
+La mayoría de los valores (125 de 183) no están en este intervalo. Por tanto, debemos renunciar a esta variable pues no es óptimo imputar tantos datos faltantes.
+
+```{r}
+data <- data[,setdiff(colnames(data),"percentage.expenditure")]
+```
+
+
+### *Measles*
+
+La variable `Measles` contiene el número de casos reportados de sarampión por cada 1000 habitantes, por lo que no tienen sentido los valores por encima de esta cota. Asumiremos que datos 0 tienen sentido pues en países con muy poca incidencia el redondeo puede haber llevado a que sea 0. Notemos que estos datos son numéricos enteros.
+
+```{r}
+sum(EV2014$Measles>1000)
+```
+Encontramos 22 muestras que no cumplen la condición. Por tanto, no consideraremos esta variable como completa y la pasaremos a la lista de variables a imputar
+
+### *Polio*
+
+La variable Polio es un porcentage luego debe de estar entre 0 y 100.
+
+```{r}
+sum(EV2014$Polio>100 | EV2014$Polio==0)
+```
+
+Todos los datos tienen sentido.
+
+### *Diphtheria*
+
+La variable Diphteria es un porcentage luego debe de estar entre 0 y 100.
+
+```{r}
+sum(EV2014$Diphtheria>100 | EV2014$Diphtheria==0)
+```
+
+Todos los datos tienen sentido.
+
+### *HIV.AIDS*
+
+Es un dato recogido cada 1000 niños luego no puede ser mayor que 1000.
+
+```{r}
+sum(EV2014$HIV.AIDS>1000 | EV2014$HIV.AIDS==0)
+```
+
+Todos los datos tienen sentido.
+
+Por tanto, imputaremos con los siguientes datos: Status + Polio + Diphtheria + HIV.AIDS. 
+
+```{r}
+data_imputar <- data # copia de los datos sobre la que trabajaremos
+```
+
+# Variables a imputar
+
+Vayamos a la tarea de imputación de los datos.
+
+## *Population*
+
+```{r}
+d <- subset(data_imputar, ! is.na(data_imputar$Population) & data_imputar$Population>100) # representamos los datos que no son NA
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=Population)) + geom_point() + labs(x="Index") + scale_y_continuous(trans='log10')
+p2 <- ggplot(data=d,aes(x=Population)) + geom_histogram(binwidth=1) + scale_x_continuous(trans='log10')
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+shapiro.test(log(d$Population))
+```
+
+La población es normal en escala logarítmica. Estudiemos modelos multineales.
+
+```{r}
+lmPopulation <- lm(Population ~ Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmPopulation,trace=0))$call
+```
+
+No es posible estimar la variable *Population*. La eliminamos.
+
+```{r}
+data <- data[,setdiff(colnames(data),"Population")]
+```
+
+## *Schooling*
+
+Se puede comprobar que los datos siguen una distribución gaussiana mediante el test de Shapiro-Wilk. Además, todos ellos entran dentro del formato adecuado: numéricos positivos. Ninguno se encuentra por encima de 25 años, lo cuál podría indicarnos la presencia de valores anómalos. Sería obvio que una edad de 70 años no podría ser un dato real.
+
+```{r}
+d <- subset(data_imputar, ! is.na(data_imputar$Schooling)) # representamos los datos que no son NA
+ggplot(data=d,aes(x=Schooling)) + geom_histogram(binwidth = 1)
+shapiro.test(d$Schooling)
+```
+
+El p-valor es mayor que el nivel de significancia $\alpha=0.05$ por lo que no podemos rechazar la hipótesis nula de normalidad de los datos. Aceptamos normalidad. Veamos si podemos utilizar un modelo más complejo para imputar datos.
+
+```{r}
+lmSchooling <- lm(Schooling ~ Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmSchooling,trace=0))$call
+```
+```{r}
+lmSchooling <- lm(formula = Schooling ~ Status + Diphtheria + HIV.AIDS, data = d)
+summary(lmSchooling)
+```
+
+El modelo parece bueno pues todas las variables son explicativas y el coeficiente de determinación $R^2 = 0.43$ es aceptable para esta tarea de imputación. Calculemos las predicciones del modelo.
+
+```{r}
+# registros con NA en la columna Schooling
+f <- data[is.na(data$Schooling),]
+# predicción
+pred <- predict(lmSchooling, data.frame(list(Status = f$Status, Diphtheria = f$Diphtheria, HIV.AIDS = f$HIV.AIDS)))
+summary(pred)
+```
+
+Los datos son coherentes. Imputémoslos.
+
+```{r}
+# guardamos la predicción con 1 cifra decimal pues es el formato de los datos
+data[is.na(data$Schooling),"Schooling"] <- round(pred,1)
+```
+
+
+## *GDP*
+
+Hagamos un histograma de los datos de la variable.
+
+```{r}
+d <- subset(data_imputar, !is.na(data_imputar$GDP & data_imputar$GDP!=0)) # representamos los datos que no son NA
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=GDP)) + geom_point() + labs(x="Index")
+p2 <- ggplot(data=d,aes(x=GDP)) + geom_histogram(binwidth=1) + scale_x_continuous(trans='log10')
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+shapiro.test(log(d$GDP))
+```
+
+La distribución del logaritmo de *GDP* se puede aceptar como normal pues el *p-valor* del test es prácticamente igual al nivel de significación.Probemos posibles modelos multineales. Para seleccionar el mejor modelo con el algoritmo *Stepwise* que minimiza el criterio de Akaike (AIC).
+
+```{r}
+lmGDP <- lm(formula = GDP ~ Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmGDP,trace=0))$call
+```
+
+```{r}
+lmGDP <- lm(formula = GDP ~ Status + HIV.AIDS, data = d)
+summary(lmGDP)
+```
+
+El modelo presenta un coeficiente de determinación `R^2=0.19` por lo que resultaría aceptable a priori. No obstante, el error residual estándar es enorme. Asumiremos este riesgo para poder imputar datos.
+
+```{r}
+f <- data[is.na(data$GDP) | data_imputar$GDP==0,]
+pred <- predict(lmGDP, newdata = data.frame(list(Status=f$Status, HIV.AIDS=f$HIV.AIDS)))
+summary(pred)
+```
+
+```{r}
+data[is.na(data$GDP),"GDP"] <- pred
+```
+
+## *Hepatitis.B*
+
+Representamos los datos.
+
+```{r}
+d <- subset(data_imputar, ! is.na(data_imputar$Hepatitis.B & data_imputar$Hepatitis.B<100 & data_imputar$Hepatitis.B>0)) # representamos los datos que no son NA
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=Hepatitis.B)) + geom_point() + labs(x="Index", title="Scatter plot Hepatitis.B")
+p2 <- ggplot(data=d,aes(x=Hepatitis.B)) + geom_histogram(binwidth=1) + labs(title="Histograma Hepatitis.B")
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+```
+
+La distribución no es normal. Probemos modelos multineales siguiendo el mismo prodecidimiento descrito en la variable *GDP*.
+
+```{r}
+lmHepatitis <- lm( Hepatitis.B ~ Status + Polio + Diphtheria + HIV.AIDS , data=d)
+summary(step(lmHepatitis,trace=0))$call
+```
+
+```{r}
+lmHepatitis <- lm(formula = Hepatitis.B ~ Status + Polio + Diphtheria, data = d)
+summary(lmHepatitis)
+```
+
+El modelo presenta un coeficiente de determinación $R^2 = 0.78$. Comprobemos que las predicciones son consistentes (valores positivos). Dado que los datos de la variable analizada son números enteros, redondeamos el resultado de nuestro modelo por consistencia.
+
+```{r}
+f <- data[is.na(data$Hepatitis.B) | data$Hepatitis.B==0 | data$Hepatitis.B>100,]
+pred <- round(predict(lmHepatitis,data.frame(list(Diphtheria = f$Diphtheria, Status = f$Status, Polio=f$Polio))))
+summary(pred)
+```
+
+Inputamos los datos.
+
+```{r}
+data[is.na(data$Hepatitis.B),'Hepatitis.B'] <- pred
+```
+
+
+## *Measles*
+
+Seleccionamos los valores que son no NA y se encuentran en el rango $]0,1000[$.
+
+```{r}
+d <- subset(data_imputar, ! is.na(data_imputar$Measles) & Measles>0 & Measles<1000) # representamos los datos que no son NA
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=Measles)) + geom_point() + labs(x="Index", title="Scatter plot Measles")
+p2 <- ggplot(data=d,aes(x=Measles)) + geom_histogram(binwidth=50) + labs(title="Histograma Measles")
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+```
+
+Probemos modelos multineales pues no se aprecia ninguna tendencia clara.
+
+```{r}
+lmMeasles <- lm(formula = Measles ~  Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmMeasles,trace=0))$call
+```
+
+```{r}
+lmMeasles <- lm(formula = Measles ~ Polio + Diphtheria, data = d)
+summary(lmMeasles)
+```
+
+No se puede imputar pues el $R^2$ es extremadamente pequeño. Ante esta situación, decidimos eliminarla del dataframe.
+
+```{r}
+data <- data[,setdiff(colnames(data),"Measles")]
+```
+
+
+## *Alcohol*
+
+Representemos un histogramas de los datos disponibles de la variable `Alcohol`. 
+
+```{r}
+d <- subset(data_imputar, ! is.na(data_imputar$Alcohol) & Alcohol>0) 
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=Alcohol)) + geom_point() + labs(x="Index", title="Scatter plot Alcohol")
+p2 <- ggplot(data=d,aes(x=Alcohol)) + geom_histogram(binwidth=2) + labs(title="Histograma Alcohol")
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+```
+
+Sin lugar a dudas, la distribución se aleja de la normal. Probemos modelos multineales.
+
+```{r}
+lmAlcohol <- lm(Alcohol ~  Status + Polio + Diphtheria + HIV.AIDS, data=d)
+summary(step(lmAlcohol,trace=0))$call
+```
+
+```{r}
+lmAlcohol <- lm(formula = Alcohol ~ Status + HIV.AIDS, 
+    data = d)
+summary(lmAlcohol)
+```
+
+El porcentaje de varianza explicado es apenas del 30 % aunque el error es considerablemente pequeño. Imputémosla.
+
+```{r}
+f <- data[is.na(data$Alcohol) | data$Alcohol==0,]
+pred <- predict(lmAlcohol, data.frame(list(Status=f$Status, HIV.AIDS=f$HIV.AIDS)))
+summary(pred)
+```
+
+```{r}
+data[is.na(data$Alcohol) | data$Alcohol==0,"Alcohol"] <- pred
+```
+
+
+## *thinness..1.19.years*
+
+Debe cumplir el formato de ser un porcentaje. Intervalo $]0,100[$.
+
+```{r}
+d <- subset(data_imputar, !is.na(data_imputar$thinness..1.19.years) & data_imputar$thinness..1.19.years>0 & data_imputar$thinness..1.19.years<100) 
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=thinness..1.19.years)) + geom_point() + labs(x="Index", title="Scatter plot thinness..1.19.years")
+p2 <- ggplot(data=d,aes(x=thinness..1.19.years)) + geom_histogram(binwidth=2) + labs(title="Histograma thinness..1.19.years")
+grid.arrange(p1, p2, nrow = 2, ncol=1)  
+```
+
+La distribución no es normal. Probaremos modelos multineales.
+
+```{r}
+lmthinnes.1.19.years <- lm(formula = thinness..1.19.years ~  Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmthinnes.1.19.years,trace=0))$call
+```
+
+```{r}
+lmthinnes.1.19.years <-lm(formula = thinness..1.19.years ~ Status + HIV.AIDS, data = d)
+summary(lmthinnes.1.19.years)
+```
+
+Se predice mal aunque no tenemos otra cosa. Comprobemos el valor de las predicciones.
+
+```{r}
+f <- data[is.na(data_imputar$thinness..1.19.years) | data_imputar$thinness..1.19.years==0 | data_imputar$thinness..1.19.years>100, ]
+pred <- predict(lmthinnes.1.19.years, newdata = data.frame(list(Status=f$Status, HIV.AIDS=f$HIV.AIDS)))
+summary(pred)
+```
+
+Tienen sentido. Imputemos en el formato adecuado.
+
+```{r}
+data[is.na(data$thinness..1.19.years),"thinness..1.19.years"] <- round(pred,1)
+```
+
+
+## *thinness.5.9.years*
+
+```{r}
+d <- subset(data_imputar, !is.na(data_imputar$thinness.5.9.years) & data_imputar$thinness.5.9.years>0 & data_imputar$thinness.5.9.years<100) 
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=thinness.5.9.years)) + geom_point() + labs(x="Index", title="Scatter plot thinness.5.9.years")
+p2 <- ggplot(data=d,aes(x=thinness.5.9.years)) + geom_histogram(binwidth=2) + labs(title="Histograma thinness.5.9.years")
+grid.arrange(p1, p2, nrow = 2, ncol=1)  
+```
+
+La distribución no es normal. Probaremos modelos multineales. Dado que únicamente hemos introducido 2 registros en la variable *thinness..1.19.years*, incluyámosla en el modelo.
+
+```{r}
+d <- subset(data, !is.na(data$thinness.5.9.years) & data$thinness.5.9.years>0 & data$thinness.5.9.years<100) 
+lmthinnes.5.9.years <- lm(formula = thinness.5.9.years ~ Status + Polio + Diphtheria + HIV.AIDS + thinness..1.19.years, data = d)
+summary(step(lmthinnes.5.9.years,trace=0))$call
+```
+
+```{r}
+lmthinnes.5.9.years <- lm(formula = thinness.5.9.years ~ thinness..1.19.years, data = d)
+summary(lmthinnes.5.9.years)
+```
+
+La predicción es mala aunque superior al 90% por lo que imputamos los datos. Veamos antes que todos ellos son coherentes (positivos).
+
+```{r}
+f <- data[is.na(data_imputar$thinness.5.9.years) | data_imputar$thinness.5.9.years==0 & data_imputar$thinness.5.9.years>100,]
+pred <- predict(lmthinnes.5.9.years, newdata = data.frame(list(thinness..1.19.years =f$thinness..1.19.years)))
+summary(pred)
+```
+
+Las predicciones son consistentes. Imputemos los datos.
+
+```{r}
+data[is.na(data$thinness.5.9.years),"thinness.5.9.years"] <- round(pred,1)
+```
+
+
+## *Total.expenditure*
+
+Es un porcentaje.
+
+```{r}
+d <- subset(data_imputar, !is.na(data_imputar$Total.expenditure) & data_imputar$Total.expenditure>0 & data_imputar$Total.expenditure<100)
+ggplot(data=d,aes(x=Total.expenditure)) + geom_histogram(binwidth = 1) + labs(title='Histograma de Total expenditure',y='cuentas')
+shapiro.test(d$Total.expenditure)
+```
+
+El p-valor del test de Shapiro-Wilk es menor que el nivel de significación $alpha=0.05$ por lo que descartamos la hipótesis nula y no aceptamos normalidad. 
+
+```{r}
+lmTotal.expenditure <- lm(Total.expenditure ~  Status + Polio + Diphtheria + HIV.AIDS, data = d)
+summary(step(lmTotal.expenditure,trace=0))$call
+```
+```{r}
+lmTotal.expenditure <- lm(formula = Total.expenditure ~ Status + Diphtheria, data = d)
+summary(lmTotal.expenditure)
+```
+
+El porcentaje de varianza explicada por el modelo es muy bajo. Imputamos los datos.
+
+```{r}
+f <- data[is.na(data_imputar$Total.expenditure) | data_imputar$Total.expenditure==0 | data_imputar$Total.expenditure>100,]
+pred <- predict(lmTotal.expenditure, newdata = data.frame(list(Status =f$Status, Diphtheria=f$Diphtheria)))
+summary(pred)
+```
+
+Las predicciones son consistentes. Imputemos los datos.
+
+```{r}
+data[is.na(data$Total.expenditure),"Total.expenditure"] <- round(pred)
+```
+
+
+## *BMI*
+
+```{r}
+d <- subset(data_imputar, !is.na(data_imputar$BMI) & data_imputar$BMI>0 & data_imputar$BMI<100) 
+p1 <- ggplot(data=d,aes(x=seq(from=1,to=nrow(d),by=1),y=BMI)) + geom_point() + labs(x="Index", title="Scatter plot BMI")
+p2 <- ggplot(data=d,aes(x=BMI)) + geom_histogram(binwidth=5) + labs(title="Histograma BMI")
+grid.arrange(p1, p2, nrow = 2, ncol=1) 
+```
+La distribución no es normal ya a simple vista aunque parece tener dos zonas claramente diferenciadas. Probaremos interacción con la variable *Status*.
+
+```{r}
+lmBMI <- lm(formula = BMI ~  Status*(Polio + Diphtheria + HIV.AIDS), data = d)
+summary(step(lmBMI,trace=0))
+```
+
+El coeficiente de determinación es apenas del 15 %. Veamos si las predicciones son consistentes.
+
+```{r}
+lmBMI <- lm(formula = BMI ~ Status + Diphtheria + HIV.AIDS + Status:Diphtheria, 
+    data = d)
+f <- data[is.na(data_imputar$BMI) | data_imputar$BMI==0 | data_imputar$BMI>100,]
+pred <- predict(lmBMI, newdata = data.frame(list(Status=f$Status, HIV.AIDS=f$HIV.AIDS, Diphtheria=f$Diphtheria)))
+summary(pred)
+```
+
+Imputamos los datos en el formato adecuado pues tienen sentido.
+
+```{r}
+data[is.na(data$BMI),"BMI"] <- round(pred,1)
+```
+
+
+# Dataframe final
+
+Finalmente hemos logrado un dataframe `data` donde todos los registros están completos.
+
+```{r}
+cat("Registros con datos faltantes:", nrow(data) - nrow(na.exclude(data)))
+```
+
+Incluimos ciertas variables categóricas que nos han parecido interesantes incluir dada su distribución.
+
+```{r}
+data$HIV.AIDS_cat<-cut(data$HIV.AIDS,breaks=c(0.1,0.2,9.4),labels=NULL, include.lowest=T, right=F)
+data$Diphtheria_cat<-cut(data$Diphtheria,breaks=quantile(data$Diphtheria,(0:2)/2),labels=NULL, include.lowest=T, right=T)
+data$GDP_cat <- cut(data$GDP,breaks=quantile(data$GDP,(0:2)/2),labels=NULL, include.lowest=T, right=T)
+```
+
+
+Guardamos el dataframe.
+
+```{r}
+dataframe_2014_imputado <- data
+save(dataframe_2014_imputado,file="./datos/dataframe_2014_imputado.RData")
+```
+
+
+
+
+

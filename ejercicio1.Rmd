@@ -1,0 +1,293 @@
+---
+title: "Ejercicio 1"
+author: "Rubén Balbastre Alcocer"
+date: "28/12/2021"
+output:
+  html_document:
+    toc: yes
+---
+
+**Se os pide modelizar la esperanza de vida en 2014 y usar los datos de 2015 para la validación del modelo. Es decir, deseamos predecir la esperanza de vida en 2015, como función de los factores predictivos incluidos en la base EV2015.Rdata en tantos países como sea posible. Para ello podeis utilizar todo lo aprendido durante el módulo y tomar la decisión que te parezca oportuna respecto a los datos faltantes (uso de datos completos, imputación). En esta primera tarea el objetivo es obtener el mejor ajuste posible (predictivo). Así, la componente inferencial del problema no nos preocupa en exceso por lo que podéis obviar, si lo preferis, la validación de aquellas hipótesis del modelo lineal que no sesgarán la estimación de los coeficientes.**
+
+# Análisis exploratorio
+
+Librerías necesarias
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(car)
+library(lmtest)
+```
+
+## Estudio de los valores vacíos (NA) y selección de variables
+
+Esta tarea se realiza en el archivo `AED.Rmd`. Importamos el dataframe con los datos ya imputados, los registros eliminados y las variables creadas. Este recibe el nombre `data`. Hemos eliminado únicamente dos registros del número de muestras original `EV2014`.
+
+```{r}
+load("./datos/dataframe_2014_imputado.RData")
+```
+
+# Modelos
+
+## Modelos multilineales 
+
+En esta sección, nos dedicaremos a buscar un modelo multineal que explique la varianza de la variable `Life.expectancy`. Para ello, dividiremos esta sección en varios apartados:
+
+- Diagnóstico
+- Outliers
+- Colinealidad de las variables
+- Heterocedasticidad de los residuos
+- Normalidad de los residuos
+- Linealidad de los residuos
+
+### Diagnóstico
+
+Procedamos a realizar la búsqueda de un modelo lineal con todas las variables posibles. Seleccionemos el mejor modelo mediante la función `step` en las direcciones *backward* y *both*. Esta función minimiza el criterio de Akaike (AIC) mediante el algoritmo *Stepwise*.
+
+```{r}
+lm1 <- lm(formula = Life.expectancy~., data=dataframe_2014_imputado) 
+# búsqueda del mejor modelo
+step_action <- step(lm1,direction = "backward",trace=0)
+cat("\n\n Mejor modelo con direction=backward: \n\n")
+step_action$call # mejor modelo encontrado
+step_action <- step(lm1,direction = "both",trace=0)
+cat("\n\n Mejor modelo con direction=both: \n\n")
+step_action$call # mejor modelo encontrado
+```
+
+Obtenemos el mismo modelo, así que lo tomaremos como bueno.
+
+```{r}
+# para poder nombrar bien las filas
+rownames(dataframe_2014_imputado) <- seq(from = 1, to=nrow(dataframe_2014_imputado), by = 1) 
+lm1 <-lm(formula = Life.expectancy ~ Diphtheria + thinness.5.9.years + 
+    Schooling + GDP + HIV.AIDS, data = dataframe_2014_imputado)
+summary(lm1)
+```
+
+Todas las variables de nuestro modelo son ahora explicativas. Procedamos al siguiente paso.
+
+### Outliers
+
+Estudiamos los puntos que escapan de la predicción del modelo mediante una serie de criterios que se presentan en las siguientes figuras
+
+```{r}
+#par(mfrow=c(3,2))
+plot(lm1)
+car::influencePlot(lm1)
+summary(influence.measures(lm1))
+```
+
+Eliminamos los puntos que se listan en el vector `outliers`. Estos cumplen uno de los siguientes criterios:
+
+- Residuos estudentizados mayor que 3 veces la desviación estándar de los residuos.
+- Ser punto influyente en el modelo.
+
+```{r}
+outliers <- c(144,28,4)
+data_outliers <- dataframe_2014_imputado[setdiff(rownames(dataframe_2014_imputado),outliers),]
+lm1 <- update(lm1,data = data_outliers)
+```
+
+Hemos eliminado 3 puntos de outliers y hemos mejorado en casi 3 puntos el coeficiente de determinación $R^2$. 
+
+### Colinealidad de las variables
+
+```{r}
+car::vif(lm1)
+```
+
+Los valores son menores que 5, por lo que no existe colinealidad entre las variables del modelo.
+
+### Heterocedasticidad de los residuos
+
+```{r}
+lmtest::bptest(lm1)
+```
+
+El pvalor del test de Breusch-Pagan es mayor que el nivel de significación $\alpha=0.05$, por lo que no podemos rechazar la hipótesis nula de que los residuos del modelo sean homocedásticos. Por tanto, asumimos homocedasticidad en los residuos.
+
+
+### Normalidad de los residuos
+
+```{r}
+shapiro.test(lm1$residuals)
+```
+
+Los residuos siguen normalidad pues rechazamos la hipótesis nula del test Shapiro-Wilk.
+
+### Linealidad de los residuos
+
+Representemos los residuos studentizados en función de los valores ajustados y una curva de suavizado para discernir si los residuos son lineales.
+
+```{r}
+ggplot(data = NULL, aes(x = fitted(lm1), y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "valores ajustados") + theme_bw() 
+
+cat("Media de los residuos",mean(lm1$residuals))
+```
+
+Observamos no linealidad de los residuos pues la recta $y=0$ no se encuentra en los intervalos de cofianza de la curva de suavizado. Representemos los residuos del modelo en función de cada variable para intentar discernir que variable es la que causa la no linealidad.
+
+```{r}
+p1 <- ggplot(data = data_outliers, aes(x = Diphtheria, y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "Diphtheria") + theme_bw() 
+
+p2 <- ggplot(data = data_outliers, aes(x = thinness.5.9.years , y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "thinness.5.9.years") + theme_bw()
+
+p3 <- ggplot(data = data_outliers, aes(x = Schooling , y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "Schooling") + theme_bw()
+
+p4 <- ggplot(data = data_outliers, aes(x = GDP , y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "GDP") + theme_bw()
+
+p5 <- ggplot(data = data_outliers, aes(x = HIV.AIDS , y = rstudent(lm1))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "HIV.AIDS") + theme_bw()
+
+# grid.arrange(p1, p2,p3,p4,p5, nrow = 3, ncol=2) 
+p1
+p2
+p3
+p4
+p5
+#p6
+```
+
+
+Encontramos aparente no linealidad en las variables `Diphtheria`,`Schooling`, `thinness.5.9.years` y `HIV.AIDS`. Propongamos modelos que incluyan versiones polinómicas de estas variables.
+
+## Modelos multilineales y polinómicos
+
+### Diagnóstico
+
+Probemos a introducir variables cuadráticas de dichas variables en el modelo. Busquemos el mejor modelo con la función `step`.
+
+```{r}
+data_centred <- dataframe_2014_imputado
+# cols <- setdiff(colnames(data),"Status")
+# for (i in cols){
+#   data_centred[,i] <- data[,i] - mean(data[,i])
+# }
+```
+
+
+```{r}
+lm3 <- lm(Life.expectancy ~ . + poly(Schooling,3) + poly(Diphtheria,2) + poly(thinness.5.9.years,3) + poly(HIV.AIDS,3), data=data_centred)
+summary(step(lm3,trace=0,direction="both"))$call
+```
+
+Encontramos el mismo modelo. Trabajemos con él.
+
+```{r}
+lm3 <-lm(formula = Life.expectancy ~ GDP + poly(Schooling, 3) + poly(Diphtheria, 
+    2) + poly(thinness.5.9.years, 3) + poly(HIV.AIDS, 3), data = data_centred)
+summary(lm3)
+#car::influencePlot(lm3,plot=F)
+```
+
+Obtenemos un modelo con un coeficiente de determinación mucho mejor que el modelo anterior en esta misma etapa. Procedamos a evaluar los outliers del modelo.
+
+### Outliers
+
+```{r}
+plot(lm3)
+car::influencePlot(lm3)
+summary(influence.measures(lm3))
+```
+
+Eliminemos los puntos siguiendo el mismo criterio que en el modelo anterior
+
+```{r}
+outliers <- c(144,108,75,93)
+data_outliers <- data_centred[setdiff(rownames(data_centred),outliers),]
+lm3 <- update(lm3,data=data_outliers)
+summary(lm3)
+```
+
+### Colinealidad de las variables
+
+```{r}
+car::vif(lm3)
+```
+
+
+### Heterocedasticidad de los residuos
+
+```{r}
+lmtest::bptest(lm3)
+```
+
+No podemos rechazar homocedasticidad, así que aceptamos que los residuos son homocedásticos.
+
+### Normalidad de los residuos
+
+
+```{r}
+shapiro.test(lm3$residuals)
+```
+
+No podemos rechazar normalidad. Por tanto, aceptamos la normalidad de los residuos.
+
+### Linealidad de los residuos
+
+```{r}
+ggplot(data = data_outliers, aes(x = fitted(lm3), y = rstudent(lm3))) + 
+geom_point() + geom_smooth(color = "coral",span=0.8) + geom_hline(yintercept = 0) + labs(y = "residuos studentizados", x = "valores ajustados") + theme_bw() 
+cat("Media de los residuos",mean(lm3$residuals))
+```
+El modelo final presentado en este documento presenta un coeficiente de determinación de 0.86. Cumple no linealidad entre sus variables, siendo todas ellas explicativas. Además, los residuos cumplen homocedasticidad, normalidad y los residuos son lineales. Todo ello, habiendo eliminado únicamente 4 registros de un total de 183, es decir, un 2.2 %.
+
+Guardemos el dataframe modificado del último modelo para poder realizar la predicción
+
+```{r}
+save(data_centred,file="./datos/data_ejercicio1_modelo.RData")
+```
+
+# Predicción
+
+```{r}
+load("./datos/dataframe_2015_imputado.RData")
+data_centred <- data
+EVpred <- predict(lm3, newdata = data.frame(list(Diphtheria = data_centred$Diphtheria,thinness.5.9.years = data_centred$thinness.5.9.years, Schooling = data_centred$Schooling, GDP = data_centred$GDP, HIV.AIDS =data_centred$HIV.AIDS)))
+write.table(EVpred, './pred.csv', row.names =F)
+save(EVpred,file='./pred.RData')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
